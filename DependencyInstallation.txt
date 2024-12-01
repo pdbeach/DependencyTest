@@ -1,0 +1,57 @@
+conda create -n cv_nn
+
+conda activate cv_nn
+
+conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.8 -c pytorch -c nvidia
+
+conda install opencv
+
+conda install numpy=1.23.5 pandas=1.5.3 matplotlib=3.7.1 scikit-learn=1.2.2 scikit-image=0.20.0
+
+conda install jupyterlab
+
+python -c "import torch; print(torch.cuda.is_available())"
+
+Package	Version
+Python	3.9
+PyTorch	2.0.1
+torchvision	0.15.2
+torchaudio	2.0.2
+pytorch-cuda	11.8
+OpenCV	4.7.0
+numpy	1.23.5
+pandas	1.5.3
+matplotlib	3.7.1
+scikit-learn	1.2.2
+scikit-image	0.20.0
+jupyterlab	3.6.3
+
+import torch
+import torchvision
+import cv2
+
+# Check PyTorch CUDA availability
+print("PyTorch CUDA Available:", torch.cuda.is_available())
+
+# Check Torchvision version
+print("Torchvision Version:", torchvision.__version__)
+
+# Check OpenCV version
+print("OpenCV Version:", cv2.__version__)
+
+# Test GPU tensor operation
+x = torch.rand(5, 3).cuda()
+print("Tensor on GPU:", x)
+
+
+
+import torch
+import torchvision
+import torchaudio
+
+print("PyTorch Version:", torch.__version__)
+print("Torchvision Version:", torchvision.__version__)
+print("Torchaudio Version:", torchaudio.__version__)
+print("CUDA Available:", torch.cuda.is_available())
+print("CUDA Version:", torch.version.cuda)
+
