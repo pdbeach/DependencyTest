@@ -1,0 +1,73 @@
+import os
+import json
+from PIL import Image
+import torch
+from torch.utils.data import Dataset
+
+class CustomDataset(Dataset):
+    def __init__(self, images_dir, annotations_dir, transforms=None):
+        self.images_dir = images_dir
+        self.annotations_dir = annotations_dir
+        self.transforms = transforms
+        self.label_map = self.create_label_map()
+        
+        # Get all image files
+        self.image_files = sorted([f for f in os.listdir(images_dir) if f.endswith('.jpg') or f.endswith('.png')])
+        
+        # Create a mapping from image filename to annotation filename
+        self.img2ann = {}
+        for img_file in self.image_files:
+            # Assume that the annotation file has the same name as the image file but with a .json extension
+            ann_file = os.path.splitext(img_file)[0] + '.json'
+            ann_path = os.path.join(annotations_dir, ann_file)
+            if os.path.exists(ann_path):
+                self.img2ann[img_file] = ann_file
+            else:
+                # No annotation exists for this image
+                self.img2ann[img_file] = None
+
+    def create_label_map(self):
+        # Create a mapping from label names to integers
+        labels = set()
+        for ann_file in os.listdir(self.annotations_dir):
+            if ann_file.endswith('.json'):
+                with open(os.path.join(self.annotations_dir, ann_file)) as f:
+                    data = json.load(f)
+                    for shape in data['shapes']:
+                        labels.add(shape['label'])
+        label_map = {label: idx+1 for idx, label in enumerate(sorted(labels))}  # Background is 0
+        return label_map
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        # Load image
+        img_file = self.image_files[idx]
+        img_path = os.path.join(self.images_dir, img_file)
+        img = Image.open(img_path).convert("RGB")
+        
+        # Initialize target
+        target = {}
+        target['image_id'] = torch.tensor([idx])
+        
+        # Check if annotation exists
+        ann_file = self.img2ann[img_file]
+        if ann_file is not None:
+            ann_path = os.path.join(self.annotations_dir, ann_file)
+            boxes, labels = parse_annotation(ann_path)
+            
+            boxes = torch.as_tensor(boxes, dtype=torch.float32)
+            labels = torch.as_tensor([self.label_map[label] for label in labels], dtype=torch.int64)
+            
+            target['boxes'] = boxes
+            target['labels'] = labels
+        else:
+            # No annotations; create empty boxes and labels
+            target['boxes'] = torch.empty((0, 4), dtype=torch.float32)
+            target['labels'] = torch.empty((0,), dtype=torch.int64)
+        
+        if self.transforms:
+            img = self.transforms(img)
+        
+        return img, target
