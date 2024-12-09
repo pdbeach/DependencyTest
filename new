@@ -6,6 +6,7 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QFont
 from PyQt5.QtCore import Qt
+from io import BytesIO
 
 # Your paths and parameters
 model_path = "fasterrcnn_resnet50.pth"
@@ -30,24 +31,22 @@ boxes = preds['boxes']
 labels = preds['labels']
 scores = preds['scores']
 
-# Convert PIL image to QPixmap
-qimage = img.toqpixmap() if hasattr(img, 'toqpixmap') else None
-if qimage is None:
-    # Manually convert PIL image to QPixmap if PIL doesn't have toqpixmap()
-    from io import BytesIO
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    qimage = QPixmap()
-    qimage.loadFromData(buffer.getvalue(), "PNG")
+# Convert PIL image to bytes for QPixmap
+buffer = BytesIO()
+img.save(buffer, format="PNG")
+img_bytes = buffer.getvalue()
 
-# Draw bounding boxes on QPixmap
+app = QApplication(sys.argv)  # Must be before creating QPixmap
+
+qimage = QPixmap()
+qimage.loadFromData(img_bytes, "PNG")
+
 painter = QPainter(qimage)
 pen = QPen(Qt.red)
 pen.setWidth(2)
 painter.setPen(pen)
 painter.setFont(QFont("Arial", 12))
 
-# Threshold to filter out low confidence predictions
 score_thresh = 0.5
 for box, label, score in zip(boxes, labels, scores):
     if score >= score_thresh:
@@ -60,8 +59,6 @@ for box, label, score in zip(boxes, labels, scores):
 
 painter.end()
 
-# PyQt5 Application to show the image
-app = QApplication(sys.argv)
 window = QWidget()
 layout = QVBoxLayout(window)
 
