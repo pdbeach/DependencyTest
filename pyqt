@@ -1,1 +1,75 @@
-test
+import sys
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QVBoxLayout, QLabel, QTreeView, QFileSystemModel, 
+    QSplitter, QListWidget, QGraphicsView, QGraphicsScene, QWidget, QHBoxLayout
+)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap
+
+
+class ImageViewerApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Image Viewer with Statistics")
+        self.setGeometry(100, 100, 1200, 600)
+
+        # Main Widget and Layout
+        main_widget = QWidget(self)
+        self.setCentralWidget(main_widget)
+        main_layout = QHBoxLayout(main_widget)
+
+        # Splitter
+        splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(splitter)
+
+        # File Explorer (Left Column)
+        self.file_model = QFileSystemModel()
+        self.file_model.setRootPath("")
+        self.file_model.setNameFilters(["*.png", "*.jpg", "*.jpeg", "*.bmp"])
+        self.file_model.setNameFilterDisables(False)
+
+        self.file_view = QTreeView()
+        self.file_view.setModel(self.file_model)
+        self.file_view.setRootIndex(self.file_model.index(""))
+        self.file_view.setColumnWidth(0, 250)
+        self.file_view.clicked.connect(self.on_file_selected)
+        splitter.addWidget(self.file_view)
+
+        # Image Viewer (Middle Column)
+        self.image_viewer = QGraphicsView()
+        self.scene = QGraphicsScene()
+        self.image_viewer.setScene(self.scene)
+        splitter.addWidget(self.image_viewer)
+
+        # Statistics Panel (Right Column)
+        self.info_panel = QListWidget()
+        splitter.addWidget(self.info_panel)
+
+        splitter.setSizes([300, 600, 300])
+
+    def on_file_selected(self, index):
+        file_path = self.file_model.filePath(index)
+        if file_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+            self.display_image(file_path)
+            self.display_image_info(file_path)
+
+    def display_image(self, file_path):
+        self.scene.clear()
+        pixmap = QPixmap(file_path)
+        self.scene.addPixmap(pixmap)
+        self.image_viewer.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def display_image_info(self, file_path):
+        self.info_panel.clear()
+        pixmap = QPixmap(file_path)
+        self.info_panel.addItem(f"File: {file_path}")
+        self.info_panel.addItem(f"Width: {pixmap.width()} px")
+        self.info_panel.addItem(f"Height: {pixmap.height()} px")
+        self.info_panel.addItem(f"Aspect Ratio: {pixmap.width() / pixmap.height():.2f}")
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = ImageViewerApp()
+    window.show()
+    sys.exit(app.exec_())
