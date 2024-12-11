@@ -1,0 +1,53 @@
+def print_predictions_info(predictions, class_names=None):
+    """
+    Print relevant information from a model prediction dictionary.
+    
+    Args:
+        predictions (dict): A dictionary typically containing:
+            - predictions["boxes"]: Tensor of shape [N, 4] with bounding box coordinates (x_min, y_min, x_max, y_max).
+            - predictions["labels"]: Tensor of shape [N] with class indices.
+            - predictions["scores"]: Tensor of shape [N] with confidence scores.
+        class_names (list, optional): A list of class names indexed by the label integers.
+                                      If None, numeric labels will be used.
+    """
+    boxes = predictions.get("boxes", [])
+    labels = predictions.get("labels", [])
+    scores = predictions.get("scores", [])
+
+    num_detections = len(labels)
+    print(f"Total Detections: {num_detections}")
+
+    if num_detections == 0:
+        return
+
+    from collections import Counter
+    label_counts = Counter(labels.tolist())
+
+    print("Class Counts:")
+    for lbl, count in label_counts.items():
+        if class_names is not None and lbl < len(class_names):
+            class_str = class_names[lbl]
+        else:
+            class_str = str(lbl)
+        print(f"  {class_str}: {count}")
+
+    # Print detailed info per detection
+    print("\nDetailed Detections:")
+    for i in range(num_detections):
+        box = boxes[i].tolist()  # [x_min, y_min, x_max, y_max]
+        lbl = labels[i].item()
+        score = scores[i].item()
+        if class_names is not None and lbl < len(class_names):
+            class_str = class_names[lbl]
+        else:
+            class_str = str(lbl)
+        print(f"  Detection {i+1}:")
+        print(f"    Class: {class_str}")
+        print(f"    Score: {score:.4f}")
+        print(f"    Box  : {box}")
+
+
+# Example usage:
+# Assume preds = model([img_tensor])[0] returns a dictionary with "boxes", "labels", "scores"
+class_names = ["background", "Inc."]
+print_predictions_info(preds, class_names=class_names)
