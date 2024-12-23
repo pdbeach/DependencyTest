@@ -1,0 +1,47 @@
+import random
+import torch
+import torchvision.transforms.functional as F
+
+def custom_random_horizontal_flip(image, target, p=0.5):
+    # image can be a PIL.Image or a Tensor (C,H,W)
+    # target["boxes"] is Nx4 in [xmin, ymin, xmax, ymax] format
+    
+    if random.random() < p:
+        # 1) Flip image
+        image = F.hflip(image)
+        
+        # 2) Flip boxes
+        if isinstance(image, torch.Tensor):
+            # image.shape = [C, H, W]
+            _, _, width = image.shape
+        else:
+            # PIL Image
+            width, _ = image.size
+        
+        boxes = target["boxes"]
+        new_boxes = []
+        for box in boxes:
+            xmin, ymin, xmax, ymax = box
+            flipped_xmin = width - xmax
+            flipped_xmax = width - xmin
+            # preserve order: (xmin < xmax)
+            new_boxes.append([flipped_xmin, ymin, flipped_xmax, ymax])
+        
+        target["boxes"] = torch.tensor(new_boxes, dtype=boxes.dtype)
+    
+    return image, target
+
+
+def custom_to_tensor(image, target):
+    # If your image is a PIL Image, convert to Tensor
+    # (If your image is already a Tensor, you can skip this.)
+    if not isinstance(image, torch.Tensor):
+        image = F.to_tensor(image)
+    return image, target
+
+
+def custom_transform(image, target):
+    # Example transform pipeline
+    image, target = custom_random_horizontal_flip(image, target, p=0.5)
+    image, target = custom_to_tensor(image, target)
+    return image, target
