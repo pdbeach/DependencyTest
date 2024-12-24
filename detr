@@ -3,171 +3,176 @@ import json
 import random
 import numpy as np
 from PIL import Image
-from tqdm.auto import tqdm  # For progress bars
+from tqdm.auto import tqdm  # for progress bars
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
-import torchvision
-from torchvision.models.detection import detr_resnet101
-from torchvision.transforms.functional import to_tensor
+# Hugging Face DETR dependencies
+from transformers import (
+    DetrForObjectDetection,
+    DetrImageProcessor  # or DetrFeatureExtractor in older versions
+)
 
 
 def data_augmentation(image, boxes, labels):
     """
     Placeholder for data augmentation.
-    Here you can apply random transforms, flips, color jitter, etc.
-    For now, we simply convert PIL image -> Tensor.
+    You can add random flips, rotations, brightness changes, etc.
 
-    Args:
-        image (PIL.Image): The input image.
-        boxes (torch.Tensor): Bounding boxes [N, 4].
-        labels (torch.Tensor): Class labels [N].
-    Returns:
-        image (Tensor), boxes (Tensor), labels (Tensor)
+    For now, we simply return the original image, boxes, and labels.
     """
-    # Currently no augmentation, just convert image to tensor
-    image = to_tensor(image)
     return image, boxes, labels
 
 
 class UltrasonicInclusionDataset(Dataset):
     """
-    Custom dataset for ultrasonic images with LabelMe JSON annotations.
-
-    LabelMe JSON typically has a structure where:
-    - Each 'shape' may be a polygon or rectangle describing the object.
-
-    We'll parse the shapes to get bounding boxes in [xmin, ymin, xmax, ymax] format.
+    Loads ultrasonic images & LabelMe JSON annotations.
+    We assume each annotation's shapes correspond to bounding boxes or polygons
+    for the "inclusion" defect.
     """
+
     def __init__(self, images_dir, annotations_dir, transforms=None):
-        """
-        Args:
-            images_dir (str): Path to folder containing all images.
-            annotations_dir (str): Path to folder containing JSON annotations.
-            transforms (callable): Optional; a function/transform to apply to image+targets.
-        """
         super().__init__()
         self.images_dir = images_dir
         self.annotations_dir = annotations_dir
         self.transforms = transforms
         
-        # Gather image files and corresponding JSON annotation files
+        # Collect valid image-annotation pairs
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
         self.image_files = []
         self.annotation_files = []
 
-        # We assume the image name = "xxx.jpg" has annotation = "xxx.json"
-        # or similar. Adjust the logic as needed if naming differs.
-        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
-        
         all_files = os.listdir(images_dir)
         for f in all_files:
             base, ext = os.path.splitext(f)
             if ext.lower() in image_exts:
-                # Ensure there's a JSON annotation
-                json_path = os.path.join(annotations_dir, base + '.json')
+                ann_path = os.path.join(annotations_dir, base + '.json')
                 img_path = os.path.join(images_dir, f)
-                if os.path.exists(json_path):
+                if os.path.exists(ann_path):
                     self.image_files.append(img_path)
-                    self.annotation_files.append(json_path)
+                    self.annotation_files.append(ann_path)
 
-        # If your dataset is large, you might want to sort or shuffle
-        # but let's keep it simple.
-        # We only keep pairs where both image and annotation exist.
-        
-        # Debug print
-        print(f"Found {len(self.image_files)} valid image-annotation pairs.")
+        print(f"Found {len(self.image_files)} image-annotation pairs in '{images_dir}'.")
 
     def __len__(self):
         return len(self.image_files)
 
     def __getitem__(self, idx):
-        """
-        Returns:
-            image (Tensor): [C, H, W]
-            target (dict): {
-                'boxes': Tensor [N, 4],
-                'labels': Tensor [N]
-            }
-        """
         image_path = self.image_files[idx]
         annotation_path = self.annotation_files[idx]
-        
+
         # Load image
-        image = Image.open(image_path).convert('RGB')
-        
-        # Load annotation from LabelMe JSON
+        image = Image.open(image_path).convert("RGB")
+
+        # Parse LabelMe JSON
         with open(annotation_path, 'r') as f:
             data = json.load(f)
-        
+
         boxes = []
         labels = []
-        
-        for shape in data.get('shapes', []):
-            # We assume these shapes are bounding boxes or polygons for "inclusions".
-            shape_type = shape.get('shape_type', None)
 
-            # If 'points' is a polygon or rectangle
+        # Each shape is typically a bounding box or polygon for "inclusion"
+        for shape in data.get('shapes', []):
             points = shape.get('points', [])
             if not points:
                 continue
 
-            # Convert polygon -> bounding box
-            # If shape_type == 'rectangle', points typically contain [ [xmin, ymin], [xmax, ymax] ]
-            # If shape_type == 'polygon', you can compute bounding box from min/max of all points
+            # Convert shape points -> bounding box [xmin, ymin, xmax, ymax]
             xs = [p[0] for p in points]
             ys = [p[1] for p in points]
             xmin, xmax = min(xs), max(xs)
             ymin, ymax = min(ys), max(ys)
 
             boxes.append([xmin, ymin, xmax, ymax])
-            # We assign "1" for "inclusion" since DETR uses 0 for background
-            labels.append(1)
-        
-        boxes = torch.tensor(boxes, dtype=torch.float32)
-        labels = torch.tensor(labels, dtype=torch.int64)
+            # We'll call "inclusion" = class 0
+            labels.append(0)
 
-        # If no boxes found, we still return an empty array. 
-        # (But DETR might need at least something. Proceed carefully.)
-        
+        boxes = torch.tensor(boxes, dtype=torch.float32)  # (N, 4)
+        labels = torch.tensor(labels, dtype=torch.int64)  # (N,)
+
+        # Optional data augmentation
         if self.transforms is not None:
             image, boxes, labels = self.transforms(image, boxes, labels)
-        
-        target = {
-            'boxes': boxes,
-            'labels': labels
+
+        return image, boxes, labels
+
+
+class DetrCollator:
+    """
+    Collate function that:
+      1) Converts the PIL images into pixel_values/pixel_masks via DetrImageProcessor
+      2) Converts bounding boxes from absolute [xmin, ymin, xmax, ymax] to
+         normalized [cx, cy, w, h].
+      3) Builds the 'labels' list of dicts (one dict per image).
+    """
+
+    def __init__(self, feature_extractor: DetrImageProcessor):
+        self.feature_extractor = feature_extractor
+
+    def __call__(self, batch):
+        """
+        batch: list of (image, boxes, labels) from the dataset
+        """
+        images, all_boxes, all_labels = [], [], []
+        for (img, boxes, labels) in batch:
+            images.append(img)
+            all_boxes.append(boxes)
+            all_labels.append(labels)
+
+        # Convert images to model-ready format
+        encoding = self.feature_extractor(images=images, return_tensors="pt")
+        # encoding => { 'pixel_values': (B,3,H,W), 'pixel_mask': (B,H,W) }
+
+        processed_labels = []
+        for i, (boxes, labels) in enumerate(zip(all_boxes, all_labels)):
+            width, height = images[i].size  # PIL (width, height)
+
+            # Convert xyxy -> normalized cxcywh
+            norm_cxcywh = []
+            for box in boxes:
+                xmin, ymin, xmax, ymax = box.tolist()
+                cx = (xmin + xmax) / 2.0
+                cy = (ymin + ymax) / 2.0
+                w = (xmax - xmin)
+                h = (ymax - ymin)
+
+                # Normalize
+                cx /= width
+                cy /= height
+                w /= width
+                h /= height
+
+                norm_cxcywh.append([cx, cy, w, h])
+
+            norm_cxcywh = torch.tensor(norm_cxcywh, dtype=torch.float32)
+
+            processed_labels.append({
+                "class_labels": labels,        # shape (N,)
+                "boxes": norm_cxcywh          # shape (N, 4)
+            })
+
+        # Return a dict that the model can consume
+        return {
+            "pixel_values": encoding["pixel_values"],
+            "pixel_mask": encoding["pixel_mask"],
+            "labels": processed_labels
         }
-        return image, target
 
 
-def collate_fn(batch):
+def build_hf_detr_model(pretrained_ckpt="facebook/detr-resnet-101", num_labels=1):
     """
-    Custom collate function for data loader.
-    Returns lists of images and targets.
+    Build/Load a DETR model from Hugging Face.
+    By default, 'facebook/detr-resnet-101' is pretrained on COCO.
+    We set config.num_labels = 1 for 1 class of interest (inclusion).
     """
-    images = []
-    targets = []
-    for b in batch:
-        images.append(b[0])
-        targets.append(b[1])
-    return images, targets
-
-
-def build_detr_model(num_classes=2, pretrained=True):
-    """
-    Build a DETR ResNet101 model.
-    By default, COCO-pretrained DETR has 91 classes (with 1 'no object' class).
-    
-    For 1 object class (inclusion) + background, we set `num_classes = 2`.
-    """
-    model = torchvision.models.detr_resnet101(pretrained=pretrained)
-    # Replace classification head
-    in_features = model.class_embed.in_features
-    # DETR expects [N+1], where N is the number of object classes (inclusion) 
-    # and +1 for "no object" (background).
-    model.class_embed = nn.Linear(in_features, num_classes)
+    model = DetrForObjectDetection.from_pretrained(pretrained_ckpt)
+    model.config.num_labels = num_labels  # one foreground class
+    # Map id -> label name. We'll say 0 -> "inclusion"
+    model.config.id2label = {0: "inclusion"}
+    model.config.label2id = {"inclusion": 0}
     return model
 
 
@@ -176,109 +181,128 @@ def train_model(
     train_loader,
     val_loader,
     device,
-    num_epochs=10,
+    num_epochs=15,
     lr=1e-4,
     weight_decay=1e-4,
-    output_dir="./checkpoints"
+    output_dir="./checkpoints_hf_detr",
+    patience=3
 ):
     """
-    Training loop for DETR with basic early-stopping logic.
-    Saves the model whenever the validation loss improves.
+    - Basic training loop with progress bars.
+    - Prints epoch, train/val loss.
+    - Saves model whenever val loss improves.
+    - Early stopping after 'patience' epochs with no improvement.
     """
     os.makedirs(output_dir, exist_ok=True)
-    
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    best_val_loss = float('inf')
+
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+
+    # To store losses across epochs (optional: for your own plotting)
+    train_loss_history = []
+    val_loss_history = []
 
     for epoch in range(1, num_epochs + 1):
         print(f"\n=== Epoch [{epoch}/{num_epochs}] ===")
 
-        # ---------------------
-        #      TRAINING
-        # ---------------------
+        # ---------------- TRAIN ----------------
         model.train()
         running_loss = 0.0
-        
-        # Use tqdm for progress bar over the train_loader
-        for images, targets in tqdm(train_loader, desc="Training", leave=False):
-            images = list(img.to(device) for img in images)
-            
-            # Each target is a dict of { 'boxes': Tensor, 'labels': Tensor }
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        for batch_data in tqdm(train_loader, desc="Training", leave=False):
+            pixel_values = batch_data["pixel_values"].to(device)
+            pixel_mask = batch_data["pixel_mask"].to(device)
+            labels = batch_data["labels"]  # list of dicts (still on CPU)
+
+            for lbl in labels:
+                lbl["class_labels"] = lbl["class_labels"].to(device)
+                lbl["boxes"] = lbl["boxes"].to(device)
 
             optimizer.zero_grad()
-            loss_dict = model(images, targets)  # forward -> returns a dict of losses
-            total_loss = sum(loss_dict.values())
-            total_loss.backward()
+            outputs = model(
+                pixel_values=pixel_values,
+                pixel_mask=pixel_mask,
+                labels=labels
+            )
+            loss = outputs.loss
+            loss.backward()
             optimizer.step()
+            running_loss += loss.item()
 
-            running_loss += total_loss.item()
-        
         avg_train_loss = running_loss / len(train_loader)
+        train_loss_history.append(avg_train_loss)
         print(f"Train Loss: {avg_train_loss:.4f}")
 
-        # ---------------------
-        #    VALIDATION
-        # ---------------------
+        # --------------- VALIDATION ---------------
         model.eval()
-        val_loss = 0.0
+        val_running_loss = 0.0
         with torch.no_grad():
-            for images, targets in tqdm(val_loader, desc="Validation", leave=False):
-                images = list(img.to(device) for img in images)
-                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+            for batch_data in tqdm(val_loader, desc="Validation", leave=False):
+                pixel_values = batch_data["pixel_values"].to(device)
+                pixel_mask = batch_data["pixel_mask"].to(device)
+                labels = batch_data["labels"]
 
-                loss_dict = model(images, targets)
-                total_loss = sum(loss_dict.values())
-                val_loss += total_loss.item()
+                for lbl in labels:
+                    lbl["class_labels"] = lbl["class_labels"].to(device)
+                    lbl["boxes"] = lbl["boxes"].to(device)
 
-        avg_val_loss = val_loss / len(val_loader)
+                outputs = model(
+                    pixel_values=pixel_values,
+                    pixel_mask=pixel_mask,
+                    labels=labels
+                )
+                val_running_loss += outputs.loss.item()
+
+        avg_val_loss = val_running_loss / len(val_loader)
+        val_loss_history.append(avg_val_loss)
         print(f"Val Loss:   {avg_val_loss:.4f}")
 
-        # ---------------------
-        #   Checkpoint Save
-        # ---------------------
+        # --------------- CHECKPOINT / EARLY STOP ---------------
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            checkpoint_path = os.path.join(output_dir, f"best_model_epoch_{epoch}.pth")
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"  --> New best model saved at {checkpoint_path}")
+            epochs_no_improve = 0
+            ckpt_path = os.path.join(output_dir, f"best_model_epoch_{epoch}.pth")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"  --> New best model saved to {ckpt_path}")
         else:
+            epochs_no_improve += 1
             print("  --> No improvement.")
 
+            if epochs_no_improve >= patience:
+                print(f"Stopping early after {patience} epochs with no improvement.")
+                break
+
     print("Training complete!")
+    return train_loss_history, val_loss_history
 
 
 def main():
-    # ---------------------
-    #       CONFIG
-    # ---------------------
-    images_dir = "/path/to/ultrasonic/images"     # Update this
-    annotations_dir = "/path/to/labelme/jsons"    # Update this
-    output_dir = "./checkpoints_detr"            # Directory for saving models
+    # ---------------- USER CONFIG ----------------
+    images_dir = "/path/to/ultrasonic/images"   # <-- Update these
+    annotations_dir = "/path/to/labelme/jsons"  # <-- Update these
+    output_dir = "./checkpoints_hf_detr"
+
     batch_size = 4
     num_epochs = 15
-    num_workers = 2  # Adjust according to your CPU cores
+    num_workers = 2  # Adjust as needed
+    patience = 3     # Stop if no improvement for 3 epochs
 
-    # 1 object class (inclusion) + 1 background = 2
-    num_classes = 2
+    # We have 1 object class (inclusion).
+    # Hugging Face DETR handles background internally.
+    num_labels = 1
 
-    # ---------------------
-    #     DATASETS
-    # ---------------------
-    # Split your 1100 images into train/val, e.g. 80/20
-    # For demonstration, let's do it all in one dataset and then do a random split.
-    
+    # -------------- DATASET & SPLIT --------------
     full_dataset = UltrasonicInclusionDataset(
         images_dir=images_dir,
         annotations_dir=annotations_dir,
         transforms=data_augmentation
     )
 
-    # Example: 80/20 train/val split
+    # 80/20 split
     total_len = len(full_dataset)
     indices = list(range(total_len))
     random.shuffle(indices)
-    
+
     train_len = int(0.8 * total_len)
     train_indices = indices[:train_len]
     val_indices = indices[train_len:]
@@ -286,12 +310,18 @@ def main():
     train_subset = torch.utils.data.Subset(full_dataset, train_indices)
     val_subset = torch.utils.data.Subset(full_dataset, val_indices)
 
+    # -------------- FEATURE EXTRACTOR --------------
+    # For new versions of transformers:
+    feature_extractor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-101")
+    # (If you have an older version, you might see 'DetrFeatureExtractor' instead.)
+
+    # -------------- DATA LOADERS --------------
     train_loader = DataLoader(
         train_subset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=collate_fn
+        collate_fn=DetrCollator(feature_extractor)
     )
 
     val_loader = DataLoader(
@@ -299,25 +329,22 @@ def main():
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_fn
+        collate_fn=DetrCollator(feature_extractor)
     )
 
-    # ---------------------
-    #     DEVICE
-    # ---------------------
+    # -------------- DEVICE --------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # ---------------------
-    #     MODEL
-    # ---------------------
-    model = build_detr_model(num_classes=num_classes, pretrained=True)
+    # -------------- MODEL --------------
+    model = build_hf_detr_model(
+        pretrained_ckpt="facebook/detr-resnet-101",
+        num_labels=num_labels
+    )
     model.to(device)
 
-    # ---------------------
-    #   TRAINING LOOP
-    # ---------------------
-    train_model(
+    # -------------- TRAINING --------------
+    train_loss_history, val_loss_history = train_model(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -325,8 +352,16 @@ def main():
         num_epochs=num_epochs,
         lr=1e-4,
         weight_decay=1e-4,
-        output_dir=output_dir
+        output_dir=output_dir,
+        patience=patience
     )
+
+    # Optional: If you want to plot or print final losses
+    # import matplotlib.pyplot as plt
+    # plt.plot(train_loss_history, label='Train Loss')
+    # plt.plot(val_loss_history, label='Val Loss')
+    # plt.legend()
+    # plt.show()
 
 
 if __name__ == "__main__":
