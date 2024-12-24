@@ -1,0 +1,333 @@
+import os
+import json
+import random
+import numpy as np
+from PIL import Image
+from tqdm.auto import tqdm  # For progress bars
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+
+import torchvision
+from torchvision.models.detection import detr_resnet101
+from torchvision.transforms.functional import to_tensor
+
+
+def data_augmentation(image, boxes, labels):
+    """
+    Placeholder for data augmentation.
+    Here you can apply random transforms, flips, color jitter, etc.
+    For now, we simply convert PIL image -> Tensor.
+
+    Args:
+        image (PIL.Image): The input image.
+        boxes (torch.Tensor): Bounding boxes [N, 4].
+        labels (torch.Tensor): Class labels [N].
+    Returns:
+        image (Tensor), boxes (Tensor), labels (Tensor)
+    """
+    # Currently no augmentation, just convert image to tensor
+    image = to_tensor(image)
+    return image, boxes, labels
+
+
+class UltrasonicInclusionDataset(Dataset):
+    """
+    Custom dataset for ultrasonic images with LabelMe JSON annotations.
+
+    LabelMe JSON typically has a structure where:
+    - Each 'shape' may be a polygon or rectangle describing the object.
+
+    We'll parse the shapes to get bounding boxes in [xmin, ymin, xmax, ymax] format.
+    """
+    def __init__(self, images_dir, annotations_dir, transforms=None):
+        """
+        Args:
+            images_dir (str): Path to folder containing all images.
+            annotations_dir (str): Path to folder containing JSON annotations.
+            transforms (callable): Optional; a function/transform to apply to image+targets.
+        """
+        super().__init__()
+        self.images_dir = images_dir
+        self.annotations_dir = annotations_dir
+        self.transforms = transforms
+        
+        # Gather image files and corresponding JSON annotation files
+        self.image_files = []
+        self.annotation_files = []
+
+        # We assume the image name = "xxx.jpg" has annotation = "xxx.json"
+        # or similar. Adjust the logic as needed if naming differs.
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
+        
+        all_files = os.listdir(images_dir)
+        for f in all_files:
+            base, ext = os.path.splitext(f)
+            if ext.lower() in image_exts:
+                # Ensure there's a JSON annotation
+                json_path = os.path.join(annotations_dir, base + '.json')
+                img_path = os.path.join(images_dir, f)
+                if os.path.exists(json_path):
+                    self.image_files.append(img_path)
+                    self.annotation_files.append(json_path)
+
+        # If your dataset is large, you might want to sort or shuffle
+        # but let's keep it simple.
+        # We only keep pairs where both image and annotation exist.
+        
+        # Debug print
+        print(f"Found {len(self.image_files)} valid image-annotation pairs.")
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        """
+        Returns:
+            image (Tensor): [C, H, W]
+            target (dict): {
+                'boxes': Tensor [N, 4],
+                'labels': Tensor [N]
+            }
+        """
+        image_path = self.image_files[idx]
+        annotation_path = self.annotation_files[idx]
+        
+        # Load image
+        image = Image.open(image_path).convert('RGB')
+        
+        # Load annotation from LabelMe JSON
+        with open(annotation_path, 'r') as f:
+            data = json.load(f)
+        
+        boxes = []
+        labels = []
+        
+        for shape in data.get('shapes', []):
+            # We assume these shapes are bounding boxes or polygons for "inclusions".
+            shape_type = shape.get('shape_type', None)
+
+            # If 'points' is a polygon or rectangle
+            points = shape.get('points', [])
+            if not points:
+                continue
+
+            # Convert polygon -> bounding box
+            # If shape_type == 'rectangle', points typically contain [ [xmin, ymin], [xmax, ymax] ]
+            # If shape_type == 'polygon', you can compute bounding box from min/max of all points
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            xmin, xmax = min(xs), max(xs)
+            ymin, ymax = min(ys), max(ys)
+
+            boxes.append([xmin, ymin, xmax, ymax])
+            # We assign "1" for "inclusion" since DETR uses 0 for background
+            labels.append(1)
+        
+        boxes = torch.tensor(boxes, dtype=torch.float32)
+        labels = torch.tensor(labels, dtype=torch.int64)
+
+        # If no boxes found, we still return an empty array. 
+        # (But DETR might need at least something. Proceed carefully.)
+        
+        if self.transforms is not None:
+            image, boxes, labels = self.transforms(image, boxes, labels)
+        
+        target = {
+            'boxes': boxes,
+            'labels': labels
+        }
+        return image, target
+
+
+def collate_fn(batch):
+    """
+    Custom collate function for data loader.
+    Returns lists of images and targets.
+    """
+    images = []
+    targets = []
+    for b in batch:
+        images.append(b[0])
+        targets.append(b[1])
+    return images, targets
+
+
+def build_detr_model(num_classes=2, pretrained=True):
+    """
+    Build a DETR ResNet101 model.
+    By default, COCO-pretrained DETR has 91 classes (with 1 'no object' class).
+    
+    For 1 object class (inclusion) + background, we set `num_classes = 2`.
+    """
+    model = torchvision.models.detr_resnet101(pretrained=pretrained)
+    # Replace classification head
+    in_features = model.class_embed.in_features
+    # DETR expects [N+1], where N is the number of object classes (inclusion) 
+    # and +1 for "no object" (background).
+    model.class_embed = nn.Linear(in_features, num_classes)
+    return model
+
+
+def train_model(
+    model,
+    train_loader,
+    val_loader,
+    device,
+    num_epochs=10,
+    lr=1e-4,
+    weight_decay=1e-4,
+    output_dir="./checkpoints"
+):
+    """
+    Training loop for DETR with basic early-stopping logic.
+    Saves the model whenever the validation loss improves.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    best_val_loss = float('inf')
+
+    for epoch in range(1, num_epochs + 1):
+        print(f"\n=== Epoch [{epoch}/{num_epochs}] ===")
+
+        # ---------------------
+        #      TRAINING
+        # ---------------------
+        model.train()
+        running_loss = 0.0
+        
+        # Use tqdm for progress bar over the train_loader
+        for images, targets in tqdm(train_loader, desc="Training", leave=False):
+            images = list(img.to(device) for img in images)
+            
+            # Each target is a dict of { 'boxes': Tensor, 'labels': Tensor }
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+            optimizer.zero_grad()
+            loss_dict = model(images, targets)  # forward -> returns a dict of losses
+            total_loss = sum(loss_dict.values())
+            total_loss.backward()
+            optimizer.step()
+
+            running_loss += total_loss.item()
+        
+        avg_train_loss = running_loss / len(train_loader)
+        print(f"Train Loss: {avg_train_loss:.4f}")
+
+        # ---------------------
+        #    VALIDATION
+        # ---------------------
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for images, targets in tqdm(val_loader, desc="Validation", leave=False):
+                images = list(img.to(device) for img in images)
+                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+                loss_dict = model(images, targets)
+                total_loss = sum(loss_dict.values())
+                val_loss += total_loss.item()
+
+        avg_val_loss = val_loss / len(val_loader)
+        print(f"Val Loss:   {avg_val_loss:.4f}")
+
+        # ---------------------
+        #   Checkpoint Save
+        # ---------------------
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            checkpoint_path = os.path.join(output_dir, f"best_model_epoch_{epoch}.pth")
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"  --> New best model saved at {checkpoint_path}")
+        else:
+            print("  --> No improvement.")
+
+    print("Training complete!")
+
+
+def main():
+    # ---------------------
+    #       CONFIG
+    # ---------------------
+    images_dir = "/path/to/ultrasonic/images"     # Update this
+    annotations_dir = "/path/to/labelme/jsons"    # Update this
+    output_dir = "./checkpoints_detr"            # Directory for saving models
+    batch_size = 4
+    num_epochs = 15
+    num_workers = 2  # Adjust according to your CPU cores
+
+    # 1 object class (inclusion) + 1 background = 2
+    num_classes = 2
+
+    # ---------------------
+    #     DATASETS
+    # ---------------------
+    # Split your 1100 images into train/val, e.g. 80/20
+    # For demonstration, let's do it all in one dataset and then do a random split.
+    
+    full_dataset = UltrasonicInclusionDataset(
+        images_dir=images_dir,
+        annotations_dir=annotations_dir,
+        transforms=data_augmentation
+    )
+
+    # Example: 80/20 train/val split
+    total_len = len(full_dataset)
+    indices = list(range(total_len))
+    random.shuffle(indices)
+    
+    train_len = int(0.8 * total_len)
+    train_indices = indices[:train_len]
+    val_indices = indices[train_len:]
+
+    train_subset = torch.utils.data.Subset(full_dataset, train_indices)
+    val_subset = torch.utils.data.Subset(full_dataset, val_indices)
+
+    train_loader = DataLoader(
+        train_subset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        collate_fn=collate_fn
+    )
+
+    val_loader = DataLoader(
+        val_subset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn
+    )
+
+    # ---------------------
+    #     DEVICE
+    # ---------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # ---------------------
+    #     MODEL
+    # ---------------------
+    model = build_detr_model(num_classes=num_classes, pretrained=True)
+    model.to(device)
+
+    # ---------------------
+    #   TRAINING LOOP
+    # ---------------------
+    train_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=device,
+        num_epochs=num_epochs,
+        lr=1e-4,
+        weight_decay=1e-4,
+        output_dir=output_dir
+    )
+
+
+if __name__ == "__main__":
+    main()
