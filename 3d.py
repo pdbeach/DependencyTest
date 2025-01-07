@@ -19,7 +19,6 @@ from OpenGL.GL import (
     glClearColor,
     glClear,
     glEnable,
-    glDisable,
     glMatrixMode,
     glLoadIdentity,
     glFrustum,
@@ -46,131 +45,104 @@ class MyGLWidget(QOpenGLWidget):
         super().__init__(parent)
         self.setMinimumSize(800, 600)
 
-        # --- Volume Data ---
-        # Replace this with actual loading code for your float32 data.
-        # For example: self.data = np.load("my_volume_data.npy")
-        self.nx, self.ny, self.nz = 32, 32, 32
-        self.data = np.random.rand(self.nx, self.ny, self.nz).astype(np.float32)
+        # Suppose your data is shape (1024, 136, 144)
+        # Typically loaded with: self.data = np.load("my_volume_data.npy")
+        # For demonstration, let's just create dummy data:
+        nx, ny, nz = 1024, 136, 144
+        self.data = np.random.rand(nx, ny, nz).astype(np.float32)
 
-        # We will clamp data to [0, 1.05] when drawing.
+        # We'll store shape info
+        self.nx, self.ny, self.nz = self.data.shape
+
+        # Display range [0, 1.05]
         self.vmin = 0.0
         self.vmax = 1.05
 
-        # --- Transformation / Rotation ---
+        # Rotation
         self.xRot = 0.0
         self.yRot = 0.0
         self.lastMouseX = 0
         self.lastMouseY = 0
 
-        # --- Clipping plane along Y ---
-        self.cutPlaneY = 0.0  # default slider value
+        # Clipping plane Y
+        self.cutPlaneY = 0.0
+
+        # Subsampling factor (skip points to reduce load)
+        self.step = 4  # try adjusting this
 
     def initializeGL(self):
-        """
-        Called once before the first call to paintGL().
-        Setup any OpenGL state here.
-        """
         glClearColor(0.2, 0.2, 0.2, 1.0)
         glEnable(GL_DEPTH_TEST)
-
-        # Enable the clipping plane
         glEnable(GL_CLIP_PLANE0)
 
     def resizeGL(self, w, h):
-        """
-        Called upon window resizing. We set up our projection matrix here.
-        """
         if h == 0:
             h = 1
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-
-        # Simple perspective transformation
-        # left, right, bottom, top, near, far
         glFrustum(-1, 1, -1, 1, 1.0, 100.0)
         glMatrixMode(GL_MODELVIEW)
 
     def paintGL(self):
-        """
-        Called every time the widget is repainted. All drawing code goes here.
-        """
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
 
-        # Move the data away from the camera
+        # Move the data away from camera
         glTranslated(0, 0, -6)
 
-        # Apply rotations (mouse-based)
+        # Apply rotations
         glRotated(self.xRot, 1, 0, 0)
         glRotated(self.yRot, 0, 1, 0)
 
-        # Define the clipping plane along y = cutPlaneY
-        #   Plane eqn: A*x + B*y + C*z + D = 0
-        #   For a plane at y = k:  y - k = 0  =>  (0, 1, 0, -k)
+        # Clipping plane (y = cutPlaneY)
         plane_eq = [0.0, 1.0, 0.0, -self.cutPlaneY]
         glClipPlane(GL_CLIP_PLANE0, plane_eq)
 
-        # Draw your 3D data
-        self.drawFloat32Data()
+        # Draw data as subsampled point cloud
+        self.drawDataSubsampled()
 
-    def drawFloat32Data(self):
+    def drawDataSubsampled(self):
         """
-        Draw all voxels as a point cloud, colored by data value in [vmin, vmax].
-        This is a basic example. For large volumes, you’ll need a more advanced approach.
+        Render the data as points, skipping every `self.step` voxel.
         """
         nx, ny, nz = self.nx, self.ny, self.nz
 
-        # Center and scale the data so it fits roughly in [-1,1]^3
-        # (This is arbitrary; adjust as needed)
+        # Center and scale volume to roughly [-1..1]^3
         glTranslatef(-nx / 2.0, -ny / 2.0, -nz / 2.0)
         glScalef(2.0 / nx, 2.0 / ny, 2.0 / nz)
 
+        step = self.step
+
         glBegin(GL_POINTS)
-        for x in range(nx):
-            for y in range(ny):
-                for z in range(nz):
+        for x in range(0, nx, step):
+            for y in range(0, ny, step):
+                for z in range(0, nz, step):
                     val = self.data[x, y, z]
-                    # Clamp value to [vmin, vmax]
+                    # Clamp
                     if val < self.vmin:
                         val = self.vmin
                     elif val > self.vmax:
                         val = self.vmax
                     gray = (val - self.vmin) / (self.vmax - self.vmin)
-                    # Use gray to set color (grayscale)
                     glColor3f(gray, gray, gray)
                     glVertex3f(x, y, z)
         glEnd()
 
     def mousePressEvent(self, event):
-        """
-        Record the last mouse position on press, to handle rotations.
-        """
         self.lastMouseX = event.x()
         self.lastMouseY = event.y()
 
     def mouseMoveEvent(self, event):
-        """
-        When the mouse moves while pressed, compute how far it moved and update rotations.
-        """
         dx = event.x() - self.lastMouseX
         dy = event.y() - self.lastMouseY
-
-        # Update stored rotation angles (tweak sensitivity as you like)
         self.xRot += dy * 0.5
         self.yRot += dx * 0.5
-
         self.lastMouseX = event.x()
         self.lastMouseY = event.y()
-
-        # Schedule a redraw
         self.update()
 
     def setCutPlaneY(self, val):
-        """
-        Slider calls this to update the cut-plane position.
-        Suppose the slider range is [-20..20], we map that to [-2..2] by dividing by 10.0
-        Adjust as you see fit.
-        """
+        # map slider -20..20 => -2..2
         self.cutPlaneY = val / 10.0
         self.update()
 
@@ -183,26 +155,24 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Create the custom OpenGL widget
+        # GL widget
         self.glWidget = MyGLWidget(self)
 
-        # Create a slider to cut along the Y axis
+        # Slider
         self.slider = QSlider(Qt.Vertical)
-        # For example, -20..20 => -2..2 if dividing by 10
         self.slider.setRange(-20, 20)
         self.slider.setValue(0)
         self.slider.valueChanged.connect(self.glWidget.setCutPlaneY)
 
-        # Create a label
+        # Label
         self.label = QLabel("Cut Y")
         self.label.setAlignment(Qt.AlignCenter)
 
-        # Layout for the slider
+        # Layouts
         slider_layout = QVBoxLayout()
         slider_layout.addWidget(self.label)
         slider_layout.addWidget(self.slider)
 
-        # Main layout
         main_layout = QHBoxLayout(central_widget)
         main_layout.addLayout(slider_layout)
         main_layout.addWidget(self.glWidget)
