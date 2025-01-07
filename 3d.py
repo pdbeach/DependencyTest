@@ -29,6 +29,7 @@ from OpenGL.GL import (
     glClipPlane,
     glScalef,
     glTranslatef,
+    glPointSize,
     GL_COLOR_BUFFER_BIT,
     GL_DEPTH_BUFFER_BIT,
     GL_DEPTH_TEST,
@@ -43,17 +44,15 @@ class MyGLWidget(QOpenGLWidget):
         super().__init__(parent)
         self.setMinimumSize(800, 600)
 
-        # ---------------------------
-        # 1) Create random float data
-        # ---------------------------
+        # 1) Create random float data in [0,1]
         # shape = (1024, 136, 144)
-        # We'll keep it smaller for demonstration, but you can revert to the full shape if desired.
+        # That’s about 20 million voxels, so we must subsample.
         self.data = np.random.rand(1024, 136, 144).astype(np.float32)
         self.nx, self.ny, self.nz = self.data.shape
 
         # 2) Determine dynamic vmin/vmax from the data
-        self.vmin = float(self.data.min())   # typically ~0.0
-        self.vmax = float(self.data.max())   # typically ~1.0
+        self.vmin = float(self.data.min())   # ~0.0
+        self.vmax = float(self.data.max())   # ~1.0
 
         # 3) Rotation / Transform
         self.xRot = 0.0
@@ -61,12 +60,12 @@ class MyGLWidget(QOpenGLWidget):
         self.lastMouseX = 0
         self.lastMouseY = 0
 
-        # 4) Clipping plane
+        # 4) Clipping plane along y
         self.cutPlaneY = 0.0
 
-        # 5) Subsampling factor (to keep rendering fast)
-        #    Drawing every voxel is ~1024*136*144 ~ 20 million points.
-        #    We'll skip every 8th voxel in each dimension -> ~5,000 times fewer points.
+        # 5) Subsampling factor
+        #    We'll draw 1 voxel out of every 8 in each dimension.
+        #    This cuts from ~20 million to ~39k points.
         self.step = 8
 
     def initializeGL(self):
@@ -77,6 +76,9 @@ class MyGLWidget(QOpenGLWidget):
         glClearColor(0.2, 0.2, 0.2, 1.0)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_CLIP_PLANE0)
+
+        # Make points a bit larger so they're visible
+        glPointSize(3.0)
 
     def resizeGL(self, w, h):
         """
@@ -100,8 +102,7 @@ class MyGLWidget(QOpenGLWidget):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
 
-        # Move camera back so we see the volume
-        # If it's too close, you might only see a corner.
+        # Move the camera back some (if too close, you may not see much)
         glTranslated(0.0, 0.0, -12.0)
 
         # Apply rotations from mouse
@@ -110,7 +111,7 @@ class MyGLWidget(QOpenGLWidget):
 
         # Define the clipping plane along y = cutPlaneY
         # plane eqn: A*x + B*y + C*z + D = 0
-        # for y = k -> (0,1,0, -k)
+        # for y = k => (0,1,0,-k)
         plane_eq = [0.0, 1.0, 0.0, -self.cutPlaneY]
         glClipPlane(GL_CLIP_PLANE0, plane_eq)
 
@@ -119,16 +120,16 @@ class MyGLWidget(QOpenGLWidget):
 
     def drawSubsampledData(self):
         """
-        Draw the 3D volume as a point cloud,
-        skipping every 'step'-th voxel to avoid freezing.
+        Draw the 3D volume as points, skipping every 'step' voxel,
+        using a color map that is obviously not uniform.
         """
         nx, ny, nz = self.nx, self.ny, self.nz
         step = self.step
 
-        # Center volume around origin before scaling
+        # Move the volume so it's roughly centered around origin
         glTranslatef(-nx/2.0, -ny/2.0, -nz/2.0)
-        
-        # Scale volume to ~[-1..1]^3 range
+
+        # Scale it to roughly fill [-1..1]^3
         glScalef(2.0/nx, 2.0/ny, 2.0/nz)
 
         glBegin(GL_POINTS)
@@ -141,22 +142,31 @@ class MyGLWidget(QOpenGLWidget):
                         val = self.vmin
                     elif val > self.vmax:
                         val = self.vmax
-                    # map to [0..1] for gray color
-                    gray = (val - self.vmin) / (self.vmax - self.vmin)
-                    glColor3f(gray, gray, gray)
+
+                    # Map [vmin..vmax] to [0..1]
+                    c = (val - self.vmin) / (self.vmax - self.vmin)
+
+                    # Instead of grayscale, let's make a simple color gradient:
+                    # e.g., c in Red/Green, plus constant Blue.
+                    # That way, random data is obviously multi-colored.
+                    r = c
+                    g = 1.0 - c
+                    b = 0.5
+                    glColor3f(r, g, b)
+
                     glVertex3f(x, y, z)
         glEnd()
 
     def mousePressEvent(self, event):
         """
-        Track the last mouse position for rotation.
+        Remember the last mouse position for rotation.
         """
         self.lastMouseX = event.x()
         self.lastMouseY = event.y()
 
     def mouseMoveEvent(self, event):
         """
-        When mouse is moved while pressed, update rotation angles.
+        When the mouse moves while pressed, update rotation angles.
         """
         dx = event.x() - self.lastMouseX
         dy = event.y() - self.lastMouseY
@@ -166,12 +176,13 @@ class MyGLWidget(QOpenGLWidget):
 
         self.lastMouseX = event.x()
         self.lastMouseY = event.y()
+
         self.update()
 
     def setCutPlaneY(self, val):
         """
-        Slider function to set cutPlaneY.
-        Maps slider -20..20 => -2..2
+        Slider function for Y clipping plane.
+        Maps slider range [-20..20] => [-2..2].
         """
         self.cutPlaneY = val / 10.0
         self.update()
@@ -180,15 +191,15 @@ class MyGLWidget(QOpenGLWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Large 3D Float32 Data - Grayscale Viewer")
+        self.setWindowTitle("Large 3D Float32 Data - Colorful Viewer")
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Our custom GL widget
+        # Our custom OpenGL widget
         self.glWidget = MyGLWidget(self)
 
-        # Vertical slider for Y clipping
+        # Vertical slider to control y-clipping
         self.slider = QSlider(Qt.Vertical)
         self.slider.setRange(-20, 20)
         self.slider.setValue(0)
@@ -207,13 +218,11 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(slider_layout)
         main_layout.addWidget(self.glWidget)
 
-
 def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
-
 
 if __name__ == "__main__":
     main()
