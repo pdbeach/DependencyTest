@@ -3,7 +3,7 @@ import numpy as np
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QHBoxLayout,
-    QSlider, QWidget, QVBoxLayout, QLabel
+    QVBoxLayout, QWidget, QSlider, QLabel
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QSurfaceFormat
@@ -19,7 +19,7 @@ from OpenGL.GL.shaders import compileShader, compileProgram
 def load_volume(file_path, shape=(1024, 136, 144), dtype=np.float32):
     """
     Reads a binary file containing a 3D volume of float32 values
-    and reshapes it to the given shape: (D, H, W).
+    and reshapes it to the given shape: (Z, Y, X).
     """
     # Load raw float32 data
     volume_data = np.fromfile(file_path, dtype=dtype)
@@ -30,16 +30,20 @@ def load_volume(file_path, shape=(1024, 136, 144), dtype=np.float32):
         )
     volume_data = volume_data.reshape(shape)
 
-    # Optional: Normalize data to [0,1] for easier visualization
+    # Optional: normalize data to [0,1] for easier visualization
     # volume_data = (volume_data - volume_data.min()) / (volume_data.ptp() + 1e-8)
 
     return volume_data
 
 
 ##############################################################################
-# 2. A QOpenGLWidget subclass that displays a single Y-slice
+# 2. A QOpenGLWidget subclass that displays a single X-slice
 ##############################################################################
 class VolumeSliceWidget(QOpenGLWidget):
+    """
+    Displays a cross-section of the volume in the y-z plane
+    at a fixed x index.
+    """
     def __init__(self, volume_data, parent=None):
         super().__init__(parent)
         self.volume_data = volume_data
@@ -48,10 +52,10 @@ class VolumeSliceWidget(QOpenGLWidget):
         self.vao = None
         self.vbo = None
 
-        # The 3D volume shape is (Depth, Height, Width)
+        # volume_data.shape = (z, y, x) = (1024, 136, 144)
         self.depth, self.height, self.width = volume_data.shape
 
-        # Fullscreen quad positions (x, y in NDC, plus dummy z=0)
+        # Fullscreen quad positions (x, y in NDC, plus z=0)
         self.screen_quad_coords = np.array([
             -1.0, -1.0, 0.0,   # bottom-left
              1.0, -1.0, 0.0,   # bottom-right
@@ -59,9 +63,8 @@ class VolumeSliceWidget(QOpenGLWidget):
              1.0,  1.0, 0.0    # top-right
         ], dtype=np.float32)
 
-        # Which slice in the Y dimension do we show?
-        # Range is [0, height-1]
-        self.slice_index = self.height // 2  # start in the middle
+        # Which x-slice do we show? Range is [0, width-1]
+        self.x_slice_index = self.width // 2  # start in the middle
 
     def initializeGL(self):
         """Set up shaders, create the 3D texture, and configure OpenGL state."""
@@ -79,7 +82,7 @@ class VolumeSliceWidget(QOpenGLWidget):
                      self.screen_quad_coords,
                      GL_STATIC_DRAW)
 
-        # In this example, we have a single attribute: position (location = 0)
+        # Position attribute (location = 0)
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, None)
 
@@ -92,34 +95,33 @@ class VolumeSliceWidget(QOpenGLWidget):
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
 
-        # volume_data.shape = (D, H, W) = (1024, 136, 144)
-        d, h, w = self.volume_data.shape
-
-        # Upload data to the GPU. Data is float32, so internal format can be GL_R32F
+        # Upload data to the GPU (internal format = GL_R32F)
         glTexImage3D(
             GL_TEXTURE_3D,
             0,
             GL_R32F,
-            w, h, d,
+            self.width,      # X
+            self.height,     # Y
+            self.depth,      # Z
             0,
             GL_RED,
             GL_FLOAT,
             self.volume_data
         )
 
-        # Unbind to clean up
+        # Unbind
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
         glBindTexture(GL_TEXTURE_3D, 0)
 
         # General OpenGL settings
         glClearColor(0.0, 0.0, 0.0, 1.0)
-        glDisable(GL_DEPTH_TEST)  # For a simple 2D slice, depth test not needed
+        glDisable(GL_DEPTH_TEST)
 
     def paintGL(self):
         """
-        Render the selected slice by sampling the 3D texture at:
-        (x, y=sliceIndex, z) for each screen pixel (mapped to x,z).
+        Render the selected X-slice by sampling the 3D texture at:
+        (z, y, x = x_slice_index).
         """
         glClear(GL_COLOR_BUFFER_BIT)
 
@@ -131,12 +133,13 @@ class VolumeSliceWidget(QOpenGLWidget):
         glBindTexture(GL_TEXTURE_3D, self.texture_id)
         glUniform1i(glGetUniformLocation(self.shader_program, "volumeTex"), 0)
 
-        # Pass uniforms
-        slice_loc = glGetUniformLocation(self.shader_program, "sliceIndex")
-        glUniform1f(slice_loc, float(self.slice_index))
+        # Pass the x-slice uniform
+        x_loc = glGetUniformLocation(self.shader_program, "xIndex")
+        glUniform1f(x_loc, float(self.x_slice_index))
 
-        height_loc = glGetUniformLocation(self.shader_program, "heightSize")
-        glUniform1f(height_loc, float(self.height))
+        # Pass width size for normalization
+        x_size_loc = glGetUniformLocation(self.shader_program, "xSize")
+        glUniform1f(x_size_loc, float(self.width))
 
         # Draw the fullscreen quad
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
@@ -150,8 +153,11 @@ class VolumeSliceWidget(QOpenGLWidget):
 
     def create_shader_program(self):
         """
-        Create a simple shader program that samples from 3D volume
-        at a fixed 'y' slice.
+        Create a simple shader that displays a slice in the x dimension.
+        We'll interpret the slice at xIndex, and map the
+        screen quad to y,z axes.
+        
+        volumeTex is sampled as (z, y, x).
         """
         vertex_src = r"""
         #version 330 core
@@ -163,7 +169,8 @@ class VolumeSliceWidget(QOpenGLWidget):
         void main()
         {
             // a_position in [-1..1]
-            // Map to [0..1] for x, z
+            // Map to [0..1] for vUV
+            // We'll interpret vUV.x => y, vUV.y => z
             vUV = (a_position.xy * 0.5) + 0.5;
             gl_Position = vec4(a_position, 1.0);
         }
@@ -175,23 +182,24 @@ class VolumeSliceWidget(QOpenGLWidget):
         in vec2 vUV;
         out vec4 fragColor;
 
-        // The 3D volume (D,H,W)
+        // The 3D volume (z, y, x)
         uniform sampler3D volumeTex;
 
-        // Which slice we show in the Y dimension
-        uniform float sliceIndex;
-        // The total size of the Y dimension
-        uniform float heightSize;
+        // The x dimension slice
+        uniform float xIndex;
+        // The total width
+        uniform float xSize;
 
         void main()
         {
-            // sliceIndex is in [0..heightSize-1]
-            // Convert to [0..1]
-            float yTex = sliceIndex / (heightSize - 1.0);
+            // xIndex in [0..xSize-1], convert to [0..1]
+            float xTex = xIndex / (xSize - 1.0);
 
-            // vUV is in [0..1] for the x and z axes
-            // So we sample volumeTex at (x, y, z) = (vUV.x, yTex, vUV.y)
-            float val = texture(volumeTex, vec3(vUV.x, yTex, vUV.y)).r;
+            // vUV.x => y in [0..1]
+            // vUV.y => z in [0..1]
+
+            // sample (z, y, x) = (vUV.y, vUV.x, xTex)
+            float val = texture(volumeTex, vec3(vUV.y, vUV.x, xTex)).r;
 
             // Simple grayscale
             fragColor = vec4(val, val, val, 1.0);
@@ -211,37 +219,53 @@ class VolumeSliceWidget(QOpenGLWidget):
 class MainWindow(QMainWindow):
     def __init__(self, volume_data, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Slice Through Y-Axis (PyQt5 + OpenGL)")
+        self.setWindowTitle("Slice Through X-Axis (PyQt5 + OpenGL)")
 
-        # Central widget with layout
+        # Main container
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout()
-        central_widget.setLayout(layout)
 
-        # Create the volume slice widget
+        # Vertical layout: top = GL widget, bottom = slider
+        main_layout = QVBoxLayout()
+        central_widget.setLayout(main_layout)
+
+        # 1) The volume slice widget
         self.render_widget = VolumeSliceWidget(volume_data, self)
-        layout.addWidget(self.render_widget)
+        main_layout.addWidget(self.render_widget, stretch=1)
 
-        # Add a horizontal slider to move through the Y dimension
+        # 2) A small horizontal layout for the slider + label
+        slider_layout = QHBoxLayout()
+
+        # Add a label for the slider
+        self.label = QLabel("X-slice:")
+        slider_layout.addWidget(self.label)
+
+        # The slider controlling x slices
         self.slider = QSlider(Qt.Horizontal)
-        # Y dimension is volume_data.shape[1]
-        _, h, _ = volume_data.shape
-        self.slider.setRange(0, h - 1)
-        self.slider.setValue(h // 2)  # start in the middle
-        self.slider.valueChanged.connect(self.on_slice_changed)
-        layout.addWidget(self.slider)
+        # x dimension is volume_data.shape[2]
+        _, _, w = volume_data.shape
+        self.slider.setRange(0, w - 1)
+        self.slider.setValue(w // 2)  # start in the middle
+        # Make it a bit narrower
+        self.slider.setFixedWidth(300)
 
-        # Optionally show the current slice number
-        self.label = QLabel(f"Y-slice: {self.slider.value()}")
-        layout.addWidget(self.label)
+        # Connect slider to handler
+        self.slider.valueChanged.connect(self.on_xslice_changed)
+
+        slider_layout.addWidget(self.slider)
+
+        # Possibly add a numeric label showing the current slice
+        self.current_slice_label = QLabel(f"{self.slider.value()}")
+        slider_layout.addWidget(self.current_slice_label)
+
+        main_layout.addLayout(slider_layout)
 
         self.resize(800, 600)
 
-    def on_slice_changed(self, value):
-        """Update the slice index in the OpenGL widget and refresh."""
-        self.render_widget.slice_index = value
-        self.label.setText(f"Y-slice: {value}")
+    def on_xslice_changed(self, value):
+        """Update the x slice index in the OpenGL widget and refresh."""
+        self.render_widget.x_slice_index = value
+        self.current_slice_label.setText(str(value))
         self.render_widget.update()
 
 
@@ -256,7 +280,8 @@ def main():
 
     # Load your volume (float32) from a file
     volume_file = "volume_data.bin"  # Adjust to your path
-    volume_shape = (1024, 136, 144)  # (Depth, Height, Width)
+    # (z, y, x) = (1024, 136, 144)
+    volume_shape = (1024, 136, 144)
     volume_data = load_volume(volume_file, shape=volume_shape, dtype=np.float32)
 
     window = MainWindow(volume_data)
