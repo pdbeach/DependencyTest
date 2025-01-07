@@ -1,71 +1,157 @@
 import sys
-import torch
-from PIL import Image
-from torchvision import transforms, models
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
-from PyQt5.QtGui import QPixmap, QPainter, QPen, QFont
+import numpy as np
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QHBoxLayout,
+    QVBoxLayout, QWidget, QSlider, QLabel
+)
 from PyQt5.QtCore import Qt
-from io import BytesIO
 
-# Your paths and parameters
-model_path = "fasterrcnn_resnet50.pth"
-test_image = "path/to/test_image.jpg"
-num_classes = 3  # background + your classes
-label_map = {0: "background", 1: "cat", 2: "dog"}  # Example labels
+# Matplotlib imports for embedding in PyQt5
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 
-# Load model architecture and weights
-model = models.detection.fasterrcnn_resnet50_fpn(pretrained=False)
-in_features = model.roi_heads.box_predictor.cls_score.in_features
-model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-model.load_state_dict(torch.load(model_path, map_location="cpu"))
-model.eval()
 
-# Load image and run inference
-img = Image.open(test_image).convert("RGB")
-img_tensor = transforms.ToTensor()(img)
-with torch.no_grad():
-    preds = model([img_tensor])[0]
+##############################################################################
+# 1. Load the volume data (float32) from file
+##############################################################################
+def load_volume(file_path, shape=(1024, 136, 144), dtype=np.float32):
+    """
+    Reads a binary file containing a 3D volume of float32 values
+    and reshapes it to the given shape: (Z, Y, X).
+    """
+    # Load raw float32 data
+    volume_data = np.fromfile(file_path, dtype=dtype)
+    if volume_data.size != np.prod(shape):
+        raise ValueError(
+            f"Volume data size {volume_data.size} "
+            f"does not match expected shape {shape}."
+        )
+    volume_data = volume_data.reshape(shape)
 
-boxes = preds['boxes']
-labels = preds['labels']
-scores = preds['scores']
+    # Optional: normalize data to [0,1] if desired
+    # volume_data = (volume_data - volume_data.min()) / (volume_data.ptp() + 1e-8)
 
-# Convert PIL image to bytes for QPixmap
-buffer = BytesIO()
-img.save(buffer, format="PNG")
-img_bytes = buffer.getvalue()
+    return volume_data
 
-app = QApplication(sys.argv)  # Must be before creating QPixmap
 
-qimage = QPixmap()
-qimage.loadFromData(img_bytes, "PNG")
+##############################################################################
+# 2. Matplotlib Canvas that displays a single X-slice (instead of QOpenGLWidget)
+##############################################################################
+class VolumeSliceCanvas(FigureCanvasQTAgg):
+    """
+    Displays a cross-section of the volume in the y-z plane
+    at a fixed x index using Matplotlib.
+    """
+    def __init__(self, volume_data, parent=None):
+        # Create a Matplotlib Figure
+        fig = Figure()
+        super().__init__(fig)
+        self.setParent(parent)
 
-painter = QPainter(qimage)
-pen = QPen(Qt.red)
-pen.setWidth(2)
-painter.setPen(pen)
-painter.setFont(QFont("Arial", 12))
+        self.volume_data = volume_data
+        self.depth, self.height, self.width = volume_data.shape  # (Z, Y, X)
 
-score_thresh = 0.5
-for box, label, score in zip(boxes, labels, scores):
-    if score >= score_thresh:
-        xmin, ymin, xmax, ymax = box.tolist()
-        width = xmax - xmin
-        height = ymax - ymin
-        painter.drawRect(xmin, ymin, width, height)
-        text = f"{label_map[label.item()]}: {score:.2f}"
-        painter.drawText(xmin, ymin - 5, text)
+        # The axes in which we'll show the slice
+        self.ax = self.figure.subplots()
 
-painter.end()
+        # Default x-slice index (start in the middle)
+        self.x_slice_index = self.width // 2
 
-window = QWidget()
-layout = QVBoxLayout(window)
+        # Display the initial slice
+        self.img = None
+        self.show_slice(self.x_slice_index)
 
-label_widget = QLabel()
-label_widget.setPixmap(qimage)
-layout.addWidget(label_widget)
+    def show_slice(self, x_index):
+        """Displays the slice at x_index in the y-z plane (volume_data[:, :, x])."""
+        self.ax.clear()
+        
+        # volume_data shape is (Z, Y, X).
+        # If we fix x, we get a (Z, Y) 2D slice: volume_data[:, :, x_index].
+        slice_data = self.volume_data[:, :, x_index]
 
-window.setWindowTitle("Detection Results")
-window.show()
-sys.exit(app.exec_())
+        # Show the slice with imshow (you can transpose if you prefer Y horizontal, Z vertical).
+        # E.g. self.ax.imshow(slice_data.T, origin='lower', aspect='auto')
+        # But here we’ll just display it directly:
+        self.img = self.ax.imshow(slice_data, cmap='gray', origin='lower', aspect='auto')
+        
+        self.ax.set_title(f"X-slice = {x_index}")
+        self.draw()
+
+    def update_slice(self, x_index):
+        """Update the slice index and redraw."""
+        self.x_slice_index = x_index
+        self.show_slice(x_index)
+
+
+##############################################################################
+# 3. Main Window / Application (Now with Matplotlib instead of OpenGL)
+##############################################################################
+class MainWindow(QMainWindow):
+    def __init__(self, volume_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Slice Through X-Axis (PyQt5 + Matplotlib)")
+
+        # Main container
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # Vertical layout: top = Matplotlib canvas, bottom = slider
+        main_layout = QVBoxLayout()
+        central_widget.setLayout(main_layout)
+
+        # 1) The volume slice canvas (Matplotlib)
+        self.slice_canvas = VolumeSliceCanvas(volume_data, self)
+        main_layout.addWidget(self.slice_canvas, stretch=1)
+
+        # 2) A small horizontal layout for the slider + label
+        slider_layout = QHBoxLayout()
+
+        # Add a label for the slider
+        self.label = QLabel("X-slice:")
+        slider_layout.addWidget(self.label)
+
+        # The slider controlling x slices
+        self.slider = QSlider(Qt.Horizontal)
+        # x dimension is volume_data.shape[2]
+        _, _, w = volume_data.shape
+        self.slider.setRange(0, w - 1)
+        self.slider.setValue(w // 2)  # start in the middle
+        # Make it a bit narrower
+        self.slider.setFixedWidth(300)
+
+        # Connect slider to handler
+        self.slider.valueChanged.connect(self.on_xslice_changed)
+
+        slider_layout.addWidget(self.slider)
+
+        # Numeric label for current slice
+        self.current_slice_label = QLabel(f"{self.slider.value()}")
+        slider_layout.addWidget(self.current_slice_label)
+
+        main_layout.addLayout(slider_layout)
+
+        self.resize(800, 600)
+
+    def on_xslice_changed(self, value):
+        """Update the x slice index in the Matplotlib widget and refresh."""
+        self.current_slice_label.setText(str(value))
+        self.slice_canvas.update_slice(value)
+
+
+def main():
+    app = QApplication(sys.argv)
+
+    # Load your volume (float32) from a file
+    volume_file = "volume_data.bin"  # Adjust to your path
+    volume_shape = (1024, 136, 144)  # (Z, Y, X)
+    volume_data = load_volume(volume_file, shape=volume_shape, dtype=np.float32)
+
+    window = MainWindow(volume_data)
+    window.show()
+
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
