@@ -1,25 +1,24 @@
-import torch
-from torchvision import models
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from PIL import Image
-from torchvision import transforms
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-model_path = "fasterrcnn_resnet50.pth"
-test_image = "path/to/test_image.jpg"
-num_classes = 3  # include background
+# Known values
+TP = 192
+FN = 0
+FP = 1
 
-# Create the model and replace the predictor just as you did during training
-model = models.detection.fasterrcnn_resnet50_fpn(pretrained=False)
-in_features = model.roi_heads.box_predictor.cls_score.in_features
-model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+# If you do not know TN, you can set it to 0 or any placeholder:
+TN = 0
 
-model.load_state_dict(torch.load(model_path, map_location="cpu"))
-model.eval()
+# Build confusion matrix
+cm = np.array([[TP, FN],
+               [FP, TN]])
 
-img = Image.open(test_image).convert("RGB")
-img_tensor = transforms.ToTensor()(img)
-
-with torch.no_grad():
-    preds = model([img_tensor])[0]
-
-print(preds)
+plt.figure(figsize=(5, 4))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['Predicted Positive', 'Predicted Negative'],
+            yticklabels=['Actual Positive',   'Actual Negative'])
+plt.title('Confusion Matrix (Partial Data)')
+plt.ylabel('Actual')
+plt.xlabel('Predicted')
+plt.show()
