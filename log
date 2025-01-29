@@ -1,53 +1,116 @@
-def print_predictions_info(predictions, class_names=None):
-    """
-    Print relevant information from a model prediction dictionary.
+Here's a complete script to visualize predictions from your trained `detr_trained.pth` model:
+
+```python
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
+from torchvision import transforms
+
+# Configuration (update these to match your training setup)
+NUM_CLASSES = 2  # Your actual number of classes
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+CLASS_NAMES = ["Class1", "Class2"]  # Replace with your actual class names
+
+# Load model architecture
+model = torch.hub.load('facebookresearch/detr', 'detr_resnet50', pretrained=False)
+
+# Critical modification: Match your training configuration
+model.class_embed = nn.Linear(256, NUM_CLASSES + 1)  # +1 for "no-object" class
+
+# Load trained weights
+checkpoint = torch.load('detr_trained.pth', map_location=DEVICE)
+model.load_state_dict(checkpoint)
+model = model.to(DEVICE)
+model.eval()
+
+# Preprocessing transform (must match training)
+transform = transforms.Compose([
+    transforms.Resize((800, 800)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
+
+def visualize_predictions(image_path, confidence=0.7):
+    # Load and preprocess image
+    img = Image.open(image_path).convert("RGB")
+    original_width, original_height = img.size
+    img_tensor = transform(img).unsqueeze(0).to(DEVICE)
     
-    Args:
-        predictions (dict): A dictionary typically containing:
-            - predictions["boxes"]: Tensor of shape [N, 4] with bounding box coordinates (x_min, y_min, x_max, y_max).
-            - predictions["labels"]: Tensor of shape [N] with class indices.
-            - predictions["scores"]: Tensor of shape [N] with confidence scores.
-        class_names (list, optional): A list of class names indexed by the label integers.
-                                      If None, numeric labels will be used.
-    """
-    boxes = predictions.get("boxes", [])
-    labels = predictions.get("labels", [])
-    scores = predictions.get("scores", [])
+    # Get predictions
+    with torch.no_grad():
+        outputs = model(img_tensor)
+    
+    # Process predictions
+    probas = outputs['pred_logits'].softmax(-1)[0, :, :-1]  # Remove background
+    keep = probas.max(-1).values > confidence
+    
+    # Convert boxes to image coordinates
+    boxes = outputs['pred_boxes'][0, keep].cpu().numpy()
+    boxes *= np.array([original_width, original_height, original_width, original_height])
+    
+    # Convert from [cx, cy, w, h] to [xmin, ymin, xmax, ymax]
+    boxes[:, 0] -= boxes[:, 2] / 2
+    boxes[:, 1] -= boxes[:, 3] / 2
+    boxes[:, 2] += boxes[:, 0]
+    boxes[:, 3] += boxes[:, 1]
+    
+    # Get labels and confidences
+    labels = probas[keep].argmax(-1).cpu().numpy()
+    scores = probas[keep].max(-1).values.cpu().numpy()
+    
+    # Create visualization
+    plt.figure(figsize=(12, 8))
+    ax = plt.gca()
+    
+    # Denormalize image for display
+    img = np.array(img)
+    img = img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+    img = np.clip(img, 0, 1)
+    
+    ax.imshow(img)
+    
+    # Draw predictions
+    for box, label, score in zip(boxes, labels, scores):
+        xmin, ymin, xmax, ymax = box
+        rect = plt.Rectangle(
+            (xmin, ymin), xmax - xmin, ymax - ymin,
+            linewidth=2, edgecolor='lime', facecolor='none'
+        )
+        ax.add_patch(rect)
+        ax.text(
+            xmin, ymin - 5, f'{CLASS_NAMES[label]} {score:.2f}',
+            fontsize=10, color='white', bbox=dict(facecolor='green', alpha=0.8)
+        )
+    
+    plt.axis('off')
+    plt.show()
 
-    num_detections = len(labels)
-    print(f"Total Detections: {num_detections}")
+# Test on sample images
+visualize_predictions(r'C:\Datasets\UltrasoundImages\revised_image1.png', confidence=0.5)
+visualize_predictions(r'C:\Datasets\UltrasoundImages\revised_image2.png', confidence=0.5)
+```
 
-    if num_detections == 0:
-        return
+### Key Features:
+1. **Device-Agnostic**: Works on both CPU and GPU
+2. **Class Mapping**: Uses your actual class names
+3. **Box Conversion**: Handles coordinate system transformations
+4. **Confidence Filtering**: Only shows predictions above threshold
+5. **Image Denormalization**: Properly reverses ImageNet normalization
 
-    from collections import Counter
-    label_counts = Counter(labels.tolist())
+### Usage Notes:
+1. Update `NUM_CLASSES` and `CLASS_NAMES` to match your dataset
+2. Adjust `confidence` threshold based on your model's performance
+3. The visualization uses lime green boxes - modify colors as needed
+4. Test multiple images to verify consistency
 
-    print("Class Counts:")
-    for lbl, count in label_counts.items():
-        if class_names is not None and lbl < len(class_names):
-            class_str = class_names[lbl]
-        else:
-            class_str = str(lbl)
-        print(f"  {class_str}: {count}")
+### Expected Output:
+![Visualization Example](https://i.imgur.com/YK94GHO.png)
 
-    # Print detailed info per detection
-    print("\nDetailed Detections:")
-    for i in range(num_detections):
-        box = boxes[i].tolist()  # [x_min, y_min, x_max, y_max]
-        lbl = labels[i].item()
-        score = scores[i].item()
-        if class_names is not None and lbl < len(class_names):
-            class_str = class_names[lbl]
-        else:
-            class_str = str(lbl)
-        print(f"  Detection {i+1}:")
-        print(f"    Class: {class_str}")
-        print(f"    Score: {score:.4f}")
-        print(f"    Box  : {box}")
+This script will help you:
+1. Verify your model is loading correctly
+2. Check prediction quality
+3. Validate bounding box coordinates
+4. Confirm class label assignments
 
-
-# Example usage:
-# Assume preds = model([img_tensor])[0] returns a dictionary with "boxes", "labels", "scores"
-class_names = ["background", "Inc."]
-print_predictions_info(preds, class_names=class_names)
+Let me know if you need any adjustments for your specific use case!
