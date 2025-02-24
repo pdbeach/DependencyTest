@@ -1,75 +1,30 @@
-';AutoLISP Script for Creating a Rectangular Reference Standard with 16 Holes
-;Plate Thickness: 0.5 inches (12.7mm)
-;
-;Instructions:
-;1. In AutoCAD, type APPLOAD in the command line
-;2. Browse to where you saved this .lsp file
-;3. Select the file and click "Load"
-;4. Type "CreateReferenceStandard" in the command line to run the script
+; -------------------------------
+; ReferencePlate.scr
+; Creates an 8" x 8" rectangle
+; with a 4x4 grid of 0.5" holes.
+; -------------------------------
 
-(defun c:CreateReferenceStandard (/ plateWidth plateLength holeRadius layerName)
-  ; Set up drawing environment
-  (command "_UNITS" "2" "4" "1" "2" "0" "N")  ; Set to decimal units, precision 4
-  (command "_LIMITS" "0,0" "36,24")           ; Set drawing limits
-  (command "_ZOOM" "A")                       ; Zoom all
-  
-  ; Define variables
-  (setq plateWidth 200.0)                     ; Width in mm
-  (setq plateLength 300.0)                    ; Length in mm
-  (setq holeRadius 6.0)                       ; Hole radius in mm (12mm diameter)
-  (setq rowSpacing (/ plateLength 5.0))       ; Space between rows
-  (setq colSpacing (/ plateWidth 5.0))        ; Space between columns
-  
-  ; Create a new layer for the reference standard
-  (setq layerName "ReferenceStandard")
-  (command "_LAYER" "_M" layerName "_C" "5" layerName "")  ; Create a blue layer
-  
-  ; Calculate center point for the plate (center it in the drawing)
-  (setq centerX (/ (getvar "LIMMAX") 2))
-  (setq centerY (/ (getvar "LIMMAX") 2))
-  
-  ; Calculate corner points
-  (setq x1 (- centerX (/ plateWidth 2)))
-  (setq y1 (- centerY (/ plateLength 2)))
-  (setq x2 (+ centerX (/ plateWidth 2)))
-  (setq y2 (+ centerY (/ plateLength 2)))
-  
-  ; Draw the rectangular plate
-  (command "_RECTANGLE" (list x1 y1) (list x2 y2))
-  
-  ; Create 16 holes in a 4x4 grid
-  (setq i 1)
-  (setq j 1)
-  (while (<= i 4)
-    (setq j 1)
-    (while (<= j 4)
-      (setq holeX (+ x1 (* j colSpacing)))
-      (setq holeY (+ y1 (* i rowSpacing)))
-      (command "_CIRCLE" (list holeX holeY) holeRadius)
-      (setq j (1+ j))
-    )
-    (setq i (1+ i))
-  )
-  
-  ; Add text note for thickness
-  (command "_TEXT" "_J" "_C" (list centerX (- y1 20)) 5 0 "Thickness: 0.5 inches (12.7mm)")
-  
-  ; Create a 3D model if needed (commented out by default - uncomment to use)
-  ; (command "_EXTRUDE" "_ALL" "" 12.7)  ; Extrude 12.7mm (0.5 inches)
-  
-  ; Save the drawing
-  (command "_SAVEAS" "ReferenceStandard_16Holes.dwg")
-  
-  ; Display confirmation message
-  (alert "Reference standard with 16 holes created successfully!")
-  (princ)
-)
+; 1) Draw the outer rectangle (8"x8")
+RECTANG
+0,0
+8,8
 
-; Helper function to convert millimeters to inches
-(defun mm2in (mm)
-  (* mm 0.03937)
-)
+; 2) Draw the first circle (0.5" diameter → 0.25" radius) at (1,1)
+CIRCLE
+1,1
+0.25
 
-; Load message
-(princ "\nType 'CreateReferenceStandard' to create the reference standard.")
-(princ)
+; 3) Rectangular array of the circle:
+;    - 4 columns, 4 rows
+;    - 2" spacing between columns, 2" spacing between rows
+ARRAY
+L            ; "L" = select Last created object (the circle)
+R            ; "R" = Rectangular array
+4            ; Number of columns
+4            ; Number of rows
+2            ; Distance between columns
+2            ; Distance between rows
+
+; 4) Zoom to extents for a nice view
+ZOOM
+E
