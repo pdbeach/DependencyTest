@@ -1,87 +1,75 @@
-Option Explicit
+';AutoLISP Script for Creating a Rectangular Reference Standard with 16 Holes
+;Plate Thickness: 0.5 inches (12.7mm)
+;
+;Instructions:
+;1. In AutoCAD, type APPLOAD in the command line
+;2. Browse to where you saved this .lsp file
+;3. Select the file and click "Load"
+;4. Type "CreateReferenceStandard" in the command line to run the script
 
-' SolidWorks Macro for Creating a Rectangular Reference Standard with 16 Holes
-' Plate Thickness: 0.5 inches (12.7mm)
-'
-' Instructions:
-' 1. Open SolidWorks
-' 2. Go to Tools > Macro > New
-' 3. Copy and paste this code
-' 4. Save and run the macro
+(defun c:CreateReferenceStandard (/ plateWidth plateLength holeRadius layerName)
+  ; Set up drawing environment
+  (command "_UNITS" "2" "4" "1" "2" "0" "N")  ; Set to decimal units, precision 4
+  (command "_LIMITS" "0,0" "36,24")           ; Set drawing limits
+  (command "_ZOOM" "A")                       ; Zoom all
+  
+  ; Define variables
+  (setq plateWidth 200.0)                     ; Width in mm
+  (setq plateLength 300.0)                    ; Length in mm
+  (setq holeRadius 6.0)                       ; Hole radius in mm (12mm diameter)
+  (setq rowSpacing (/ plateLength 5.0))       ; Space between rows
+  (setq colSpacing (/ plateWidth 5.0))        ; Space between columns
+  
+  ; Create a new layer for the reference standard
+  (setq layerName "ReferenceStandard")
+  (command "_LAYER" "_M" layerName "_C" "5" layerName "")  ; Create a blue layer
+  
+  ; Calculate center point for the plate (center it in the drawing)
+  (setq centerX (/ (getvar "LIMMAX") 2))
+  (setq centerY (/ (getvar "LIMMAX") 2))
+  
+  ; Calculate corner points
+  (setq x1 (- centerX (/ plateWidth 2)))
+  (setq y1 (- centerY (/ plateLength 2)))
+  (setq x2 (+ centerX (/ plateWidth 2)))
+  (setq y2 (+ centerY (/ plateLength 2)))
+  
+  ; Draw the rectangular plate
+  (command "_RECTANGLE" (list x1 y1) (list x2 y2))
+  
+  ; Create 16 holes in a 4x4 grid
+  (setq i 1)
+  (setq j 1)
+  (while (<= i 4)
+    (setq j 1)
+    (while (<= j 4)
+      (setq holeX (+ x1 (* j colSpacing)))
+      (setq holeY (+ y1 (* i rowSpacing)))
+      (command "_CIRCLE" (list holeX holeY) holeRadius)
+      (setq j (1+ j))
+    )
+    (setq i (1+ i))
+  )
+  
+  ; Add text note for thickness
+  (command "_TEXT" "_J" "_C" (list centerX (- y1 20)) 5 0 "Thickness: 0.5 inches (12.7mm)")
+  
+  ; Create a 3D model if needed (commented out by default - uncomment to use)
+  ; (command "_EXTRUDE" "_ALL" "" 12.7)  ; Extrude 12.7mm (0.5 inches)
+  
+  ; Save the drawing
+  (command "_SAVEAS" "ReferenceStandard_16Holes.dwg")
+  
+  ; Display confirmation message
+  (alert "Reference standard with 16 holes created successfully!")
+  (princ)
+)
 
-Sub main()
-    Dim swApp As Object
-    Dim swModel As Object
-    Dim swModelDoc As Object
-    Dim swPart As Object
-    Dim swSketchMgr As Object
-    Dim swFeatureMgr As Object
-    Dim boolstatus As Boolean
-    Dim longstatus As Long
-    
-    ' Connect to SolidWorks application
-    On Error Resume Next
-    Set swApp = GetObject(, "SldWorks.Application")
-    If Err.Number <> 0 Then
-        Set swApp = CreateObject("SldWorks.Application")
-        swApp.Visible = True
-    End If
-    On Error GoTo 0
-    
-    ' Create a new part document
-    Set swModel = swApp.NewDocument("Part.prtdot", 0, 0, 0)
-    Set swModelDoc = swApp.ActiveDoc
-    Set swPart = swModelDoc
-    Set swSketchMgr = swModelDoc.SketchManager
-    Set swFeatureMgr = swModelDoc.FeatureManager
-    
-    ' Set up units to inches (since plate thickness is specified in inches)
-    swModelDoc.SetUserPreferenceIntegerValue swUserPreferenceIntegerValue_e.swUnitSystem, swUnitSystem_e.swUnitSystem_IPS
-    
-    ' Create base sketch on Front plane
-    swModelDoc.Extension.SelectByID2 "Front Plane", "PLANE", 0, 0, 0, False, 0, Nothing, 0
-    swSketchMgr.InsertSketch True
-    
-    ' Define rectangular plate dimensions (in inches)
-    Dim plateWidth As Double: plateWidth = 7.874    ' 200mm = ~7.874 inches
-    Dim plateLength As Double: plateLength = 11.811 ' 300mm = ~11.811 inches
-    
-    ' Create rectangle centered at origin
-    swSketchMgr.CreateCenterRectangle 0, 0, 0, plateWidth / 2, plateLength / 2, 0
-    
-    ' Create 16 holes in a 4x4 grid pattern
-    Dim rowSpacing As Double: rowSpacing = plateLength / 5    ' Space between rows
-    Dim colSpacing As Double: colSpacing = plateWidth / 5     ' Space between columns
-    Dim holeRadius As Double: holeRadius = 0.236              ' 12mm = ~0.472 inches diameter (0.236 radius)
-    
-    Dim i As Integer, j As Integer
-    Dim x As Double, y As Double
-    
-    For i = 1 To 4
-        For j = 1 To 4
-            x = -plateWidth / 2 + j * colSpacing
-            y = -plateLength / 2 + i * rowSpacing
-            swSketchMgr.CreateCircleByRadius x, y, 0, holeRadius
-        Next j
-    Next i
-    
-    ' Exit the sketch
-    swModelDoc.ClearSelection2 True
-    
-    ' Extrude the base plate
-    swModelDoc.Extension.SelectByID2 "Sketch1", "SKETCH", 0, 0, 0, False, 0, Nothing, 0
-    swFeatureMgr.FeatureExtrusion2 True, False, False, 0, 0, 0.5, 0, False, False, False, False, 0, 0, False, False, False, False, True, True, True, 0, 0, False
-    swModelDoc.SelectionManager.EnableContourSelection = False
-    
-    ' Save the document
-    Dim filePath As String
-    filePath = swApp.GetDocumentTemplate(swDocumentTypes_e.swDocPART, swDwgPaperSizes_e.swDwgPaperAsize) ' Get default path
-    filePath = Left(filePath, InStrRev(filePath, "\")) & "ReferenceStandard_16Holes.SLDPRT"
-    swModelDoc.SaveAs2 filePath, swSaveAsVersion_e.swSaveAsCurrentVersion, False, True
-    
-    ' Rebuild the model
-    swModelDoc.Rebuild swRebuildOptions_e.swRebuildAll
-    
-    ' Display confirmation
-    MsgBox "Reference standard with 16 holes created successfully." & vbCrLf & "Saved as: " & filePath
-End Sub
+; Helper function to convert millimeters to inches
+(defun mm2in (mm)
+  (* mm 0.03937)
+)
+
+; Load message
+(princ "\nType 'CreateReferenceStandard' to create the reference standard.")
+(princ)
