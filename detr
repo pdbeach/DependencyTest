@@ -1,99 +1,87 @@
-/* 
-   CATIA VBA Macro for Creating a Rectangular Reference Standard with 16 Holes
-   Plate Thickness: 0.5 inches (12.7mm)
-   
-   Instructions:
-   1. Open CATIA V5
-   2. Go to Tools > Macro > Macros
-   3. Select "ThisWorkbench.CATScript" and click "Edit"
-   4. Copy and paste this code
-   5. Run the macro
-*/
+Option Explicit
 
-Sub CATMain()
-    Dim partDocument As Document
-    Dim part As Part
-    Dim hybridShapeFactory As HybridShapeFactory
-    Dim hybridBodies As HybridBodies
-    Dim hybridBody As HybridBody
-    Dim sketches As Sketches
-    Dim originElements As OriginElements
-    Dim reference As Reference
+' SolidWorks Macro for Creating a Rectangular Reference Standard with 16 Holes
+' Plate Thickness: 0.5 inches (12.7mm)
+'
+' Instructions:
+' 1. Open SolidWorks
+' 2. Go to Tools > Macro > New
+' 3. Copy and paste this code
+' 4. Save and run the macro
+
+Sub main()
+    Dim swApp As Object
+    Dim swModel As Object
+    Dim swModelDoc As Object
+    Dim swPart As Object
+    Dim swSketchMgr As Object
+    Dim swFeatureMgr As Object
+    Dim boolstatus As Boolean
+    Dim longstatus As Long
     
-    ' Create a new Part document
-    Set partDocument = CATIA.Documents.Add("Part")
-    Set part = partDocument.Part
+    ' Connect to SolidWorks application
+    On Error Resume Next
+    Set swApp = GetObject(, "SldWorks.Application")
+    If Err.Number <> 0 Then
+        Set swApp = CreateObject("SldWorks.Application")
+        swApp.Visible = True
+    End If
+    On Error GoTo 0
     
-    ' Access hybrid shape factory
-    Set hybridShapeFactory = part.HybridShapeFactory
+    ' Create a new part document
+    Set swModel = swApp.NewDocument("Part.prtdot", 0, 0, 0)
+    Set swModelDoc = swApp.ActiveDoc
+    Set swPart = swModelDoc
+    Set swSketchMgr = swModelDoc.SketchManager
+    Set swFeatureMgr = swModelDoc.FeatureManager
     
-    ' Access the Part bodies collection
-    Set hybridBodies = part.HybridBodies
+    ' Set up units to inches (since plate thickness is specified in inches)
+    swModelDoc.SetUserPreferenceIntegerValue swUserPreferenceIntegerValue_e.swUnitSystem, swUnitSystem_e.swUnitSystem_IPS
     
-    ' Create a new hybrid body for geometry construction
-    Set hybridBody = hybridBodies.Add()
-    hybridBody.Name = "Reference Standard"
+    ' Create base sketch on Front plane
+    swModelDoc.Extension.SelectByID2 "Front Plane", "PLANE", 0, 0, 0, False, 0, Nothing, 0
+    swSketchMgr.InsertSketch True
     
-    ' Access the sketches collection
-    Set sketches = part.Sketches
+    ' Define rectangular plate dimensions (in inches)
+    Dim plateWidth As Double: plateWidth = 7.874    ' 200mm = ~7.874 inches
+    Dim plateLength As Double: plateLength = 11.811 ' 300mm = ~11.811 inches
     
-    ' Access origin elements to get reference planes
-    Set originElements = part.OriginElements
+    ' Create rectangle centered at origin
+    swSketchMgr.CreateCenterRectangle 0, 0, 0, plateWidth / 2, plateLength / 2, 0
     
-    ' Create reference for the XY plane
-    Set reference = originElements.PlaneXY
+    ' Create 16 holes in a 4x4 grid pattern
+    Dim rowSpacing As Double: rowSpacing = plateLength / 5    ' Space between rows
+    Dim colSpacing As Double: colSpacing = plateWidth / 5     ' Space between columns
+    Dim holeRadius As Double: holeRadius = 0.236              ' 12mm = ~0.472 inches diameter (0.236 radius)
     
-    ' Create sketch for the base plate
-    Dim basePlateSketch As Sketch
-    Set basePlateSketch = sketches.Add(reference)
+    Dim i As Integer, j As Integer
+    Dim x As Double, y As Double
     
-    ' Access the factory to create geometry
-    Dim factory2D As Factory2D
-    Set factory2D = basePlateSketch.OpenEdition()
-    
-    ' Define rectangular plate dimensions 
-    Dim plateWidth As Double: plateWidth = 200  ' mm
-    Dim plateLength As Double: plateLength = 300  ' mm
-    
-    ' Create base rectangle
-    Dim rectangle As Line2D
-    Set rectangle = factory2D.CreateLine(-plateWidth/2, -plateLength/2, plateWidth/2, -plateLength/2)
-    Set rectangle = factory2D.CreateLine(plateWidth/2, -plateLength/2, plateWidth/2, plateLength/2)
-    Set rectangle = factory2D.CreateLine(plateWidth/2, plateLength/2, -plateWidth/2, plateLength/2)
-    Set rectangle = factory2D.CreateLine(-plateWidth/2, plateLength/2, -plateWidth/2, -plateLength/2)
-    
-    ' Create 16 holes in a 4x4 grid
-    Dim rowSpacing As Double: rowSpacing = plateLength / 5  ' Space between rows
-    Dim colSpacing As Double: colSpacing = plateWidth / 5   ' Space between columns
-    Dim holeRadius As Double: holeRadius = 6  ' 12mm diameter holes
-    
-    Dim circles(15) As Circle2D
-    Dim i As Integer, j As Integer, index As Integer
-    
-    index = 0
     For i = 1 To 4
         For j = 1 To 4
-            Dim x As Double: x = -plateWidth/2 + j * colSpacing
-            Dim y As Double: y = -plateLength/2 + i * rowSpacing
-            Set circles(index) = factory2D.CreateCircle(x, y, holeRadius)
-            index = index + 1
+            x = -plateWidth / 2 + j * colSpacing
+            y = -plateLength / 2 + i * rowSpacing
+            swSketchMgr.CreateCircleByRadius x, y, 0, holeRadius
         Next j
     Next i
     
-    ' Close sketch edition
-    basePlateSketch.CloseEdition
+    ' Exit the sketch
+    swModelDoc.ClearSelection2 True
     
     ' Extrude the base plate
-    Dim pad As Pad
-    Set pad = part.ShapeFactory.AddNewPad(basePlateSketch, 12.7)  ' 0.5 inch = 12.7mm
-    pad.Name = "Base Plate"
-    
-    ' Update the part
-    part.Update
+    swModelDoc.Extension.SelectByID2 "Sketch1", "SKETCH", 0, 0, 0, False, 0, Nothing, 0
+    swFeatureMgr.FeatureExtrusion2 True, False, False, 0, 0, 0.5, 0, False, False, False, False, 0, 0, False, False, False, False, True, True, True, 0, 0, False
+    swModelDoc.SelectionManager.EnableContourSelection = False
     
     ' Save the document
-    partDocument.SaveAs "ReferenceStandard_16Holes.CATPart"
+    Dim filePath As String
+    filePath = swApp.GetDocumentTemplate(swDocumentTypes_e.swDocPART, swDwgPaperSizes_e.swDwgPaperAsize) ' Get default path
+    filePath = Left(filePath, InStrRev(filePath, "\")) & "ReferenceStandard_16Holes.SLDPRT"
+    swModelDoc.SaveAs2 filePath, swSaveAsVersion_e.swSaveAsCurrentVersion, False, True
+    
+    ' Rebuild the model
+    swModelDoc.Rebuild swRebuildOptions_e.swRebuildAll
     
     ' Display confirmation
-    MsgBox "Reference standard with 16 holes created successfully."
+    MsgBox "Reference standard with 16 holes created successfully." & vbCrLf & "Saved as: " & filePath
 End Sub
